@@ -10,9 +10,10 @@
 ###########################################################################
 ## imports
 
+import warnings
 import numpy as np
-import pandas as pd
-import scipy
+import scipy.sparse.linalg as sparse_linalg
+import scipy.optimize as optimize
 
 from config import SEED
 
@@ -21,7 +22,7 @@ from config import SEED
 
 class TrustRegionDCA(object):
     def __init__(self, A, b, r, n=None,
-                 stopping_tol=10-6, irlm_tol=0.1):
+                 stopping_tol=10e-6, irlm_tol=0.1, verbose=False):
         """"""
         self.A = A
         self.b = b
@@ -32,31 +33,45 @@ class TrustRegionDCA(object):
         self.stopping_tol = stopping_tol
 
         self.lambda_star = None
-        self.lambda_n = self._irlm(tol=irlm_tol, which='LM', return_eigenvectors=False)
-        self.lambda_1, self.u = self._irlm(tol=0, which='SM', return_eigenvectors=True)
+        self.lambda_n = self._irlm(tol=irlm_tol, which='LA', return_eigenvectors=False)
+        # eigsh does not converge with tol=0
+        self.lambda_1, self.u = self._irlm(tol=10e-1, which='SA', return_eigenvectors=True)
 
         self.xk_0 = None
         self.xk_1 = self._get_initial_xk(n, r)
 
+        self.cycle = False
+        self.x_local_cycle_check = None
+        self.x_global_cycle_check = None
+
         self.rho = self._get_initial_rho()
         self.cut = self.rho * self.r
-        self.A_alt = np.diag(self.rho) - self.A
+        self.A_alt = np.eye(n) * self.rho - self.A
+
+        self.verbose = verbose
+        if verbose:
+            print('lambda_1: {}'.format(self.lambda_1))
+            print('lambda_n: {}'.format(self.lambda_n))
+            print('lambda_star: {}'.format(self.lambda_star))
+            print('rho: {}'.format(self.rho))
+            print('irlm_tol: {}'.format(self.irlm_tol))
+            print('stopping_tol: {}'.format(self.stopping_tol))
 
 
-    def _irlm(self, tol=None, which='LM', return_eigenvectors=False):
-        assert(which in ['LM','SM'])
+    def _irlm(self, tol=None, which='LA', return_eigenvectors=False):
+        # assert(which in ['LM','SM'])
         tol = self.irlm_tol if tol is None else tol
         if return_eigenvectors:
-            vals, vecs  = scipy.sparse.linalg.eigsh(
+            vals, vecs  = sparse_linalg.eigsh(
                 self.A,
                 k=1,
                 which=which,
                 tol=tol,
                 return_eigenvectors=return_eigenvectors
             )
-            return vals[0], vecs[0]
+            return vals[0], vecs[:,0]
 
-        vals  = scipy.sparse.linalg.eigsh(
+        vals  = sparse_linalg.eigsh(
             self.A,
             k=1,
             which=which,
@@ -68,10 +83,10 @@ class TrustRegionDCA(object):
 
     def _get_initial_rho(self):
         """TODO: consider alternatives"""
-        return 0.3 * self.lambda_n
+        return 0.5 * self.lambda_n
 
 
-    def _get_initial_xk(self, n, r):
+    def _get_initial_xk(self, n, r, eps=10e-4):
         """TODO: consider alternatives, perhaps random???"""
         assert(n>0)
         x0 = np.empty(n)
@@ -94,12 +109,12 @@ class TrustRegionDCA(object):
 
         u = self.u
         norm_x_star = np.linalg.norm(x_star)
-        ux_star = np.dot(u, x_star)
+        ux_star = u.dot(x_star)
         norm_u_sqrd = np.linalg.norm(u) ** 2.
         gamma = None
 
         if np.isclose(norm_x_star, self.r):
-            if np.isclose(ux_star, 0):
+            while np.isclose(ux_star, 0.0):
                 bu = np.dot(self.b, u)
                 # uA_lu < 0 when x is not a global optimum, see equation (22)
                 uA_lu = (self.lambda_1 + self.lambda_star) * norm_u_sqrd
@@ -122,6 +137,7 @@ class TrustRegionDCA(object):
 
         if np.isclose(norm_x_star, self.r):
             gamma = -2. * ux_star / norm_u_sqrd
+
         else:
             sqrt_delta = np.sqrt(
                 ux_star ** 2. - norm_u_sqrd * (norm_x_star ** 2. - self.r ** 2.)
@@ -137,14 +153,13 @@ class TrustRegionDCA(object):
 
     def update_xk(self):
         """Update step for local DCA"""
-        self.xk_0 = self.xk_1.copy()
-        self.xk_1 = (np.dot(self.A_alt, self.xk_1) - self.b)
+        self.xk_0 = self.xk_1
+        self.xk_1 = self.A_alt.dot(self.xk_1) - self.b
         norm = np.linalg.norm(self.xk_1)
         if norm <= self.cut:
             self.xk_1 /= self.rho
         else:
             self.xk_1 *= (self.r / norm)
-
 
     def update_lambda_star(self):
          self.lambda_star = -1 * np.dot(
@@ -154,11 +169,17 @@ class TrustRegionDCA(object):
 
 
     def solve_local_dca(self):
-        while np.linalg.norm(self.xk_0 - self.xk_1) >= self.stopping_tol:
+        self.update_xk()
+        dist = np.linalg.norm(self.xk_0 - self.xk_1)
+        while dist >= self.stopping_tol:
+            self.x_local_cycle_check = self.xk_0
             self.update_xk()
 
-        return self.xk_1
-
+            if np.allclose(self.x_local_cycle_check, self.xk_1):
+                self.cycle = True
+                break
+            else:
+                dist = np.linalg.norm(self.xk_0 - self.xk_1)
 
     def solve_global_dca(self):
         stop = False
@@ -166,24 +187,68 @@ class TrustRegionDCA(object):
             if self.lambda_star is not None:
                 self.reset_xk()
 
+            self.x_global_cycle_check = self.xk_1
             self.solve_local_dca()
             self.update_lambda_star()
-            stop = self.lambda_star + self.lambda_1 >= 0
+
+            if np.allclose(self.x_global_cycle_check, self.xk_1):
+                self.cycle = True
+
+            if self.cycle:
+                break
+
+            stop = (self.lambda_star + self.lambda_1 >= 0) or self.cycle
+
+        if self.cycle:
+            warnings.warn(
+                'Cycle detected, the solution may not be unique'
+                ' or another error occurred.'
+            )
 
         return self.xk_1
 
 ###########################################################################
 ## tests
 
-def test_trdca(n=100, r=10):
-    prng = np.random.RandomState(SEED)
+prng = np.random.RandomState(SEED)
 
+def test_trdca_convex(n=100, r=10, verbose=False):
     # Generate A
+    A = np.diag([(i + 1) / n for i in range(n)])
+    b = np.zeros(n)
+
+    # initialize solver
+    trdca = TrustRegionDCA(
+        A = A,
+        b = b,
+        r = r,
+        n = n,
+        verbose=verbose
+    )
+    x_star_dca = trdca.solve_global_dca()
+
+    x_star_truth = np.zeros(n)
+    x_star_truth[-1] = 10.
+
+
+    def obj(x):
+        return np.abs(0.5 * x.dot(A).dot(x) + b.dot(x))
+
+    # solution is not unique
+    assert((
+        np.allclose(x_star_dca, x_star_truth, atol=10e-6) or
+        np.allclose(x_star_dca, x_star_truth * -1., atol=10e-6)
+        ))
+
+
+def test_trdca_nonconvex(n=100, r=10, verbose=False):
+    """TODO: work in progress"""
+    # Generate A (skip for now)
     U = np.eye(n)
     for i in range(3):
         w = prng.uniform(-1,1,n);
         w[w == -1] = 0.
-        Q = np.eye(n) - 2 * w.outer(w) / np.linalg.norm(w) ** 2.
+        Q = np.eye(n) - 2 * np.outer(w,w) / np.linalg.norm(w) ** 2.
         U = U.dot(Q)
 
     d = prng.uniform(-5, 5, n)
@@ -200,28 +265,35 @@ def test_trdca(n=100, r=10):
         A = A,
         b = b,
         r = r,
-        n = n
+        n = n,
+        verbose=verbose
     )
 
-    def f(x):
+    def fun(x):
         return 0.5 * x.dot(A).dot(x) + b.dot(x)
 
+    def jac(x):
+        return (0.5 * x.dot(A + A.T) + b.T)
+
     x_star_dca = trdca.solve_global_dca()
-    x_star_slsqp = scipy.optimize.minimize(
-        f,
-        prng.uniform(-10,10,n),
+    x_star_slsqp = optimize.minimize(
+        fun,
+        prng.uniform(-1,1,n),
         method='SLSQP',
-        bounds=[(None,r) for i in range(n)]
+        jac=jac,
+        constraints=dict(
+            type='ineq',
+            fun = lambda x: r ** 2. - x.dot(x),
+            jac = lambda x: -2. * x.T
+        )
     ).x
 
-    print('DCA: {}'.format(x_star_dca))
-    print('SLSQP: {}'.format(x_star_slsqp))
-
-    return None
+    assert(np.allclose(fun(x_star_dca), fun(x_star_slsqp), atol=10e-3))
 
 ###########################################################################
 ## main
 
 if __name__ == '__main__':
-    result = test_trdca()
-    print(result)
+    test_trdca_convex(n=100)
+    test_trdca_nonconvex(n=100)
+    print('\n\n--> All tests ran without error.\n\n')
