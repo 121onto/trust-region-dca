@@ -7,5 +7,5 @@ LICENSE = 'Copyright (C) 2015, 121onto.  All rights reserved.'
 INFO = [
     'Operating System :: OS X',
     'Programming Language :: Python',
-    'Programming Language :: Python :: 3.5',
+    'Programming Language :: Python :: 3.5'
 ]
