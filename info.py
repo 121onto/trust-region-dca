@@ -1,5 +1,5 @@
-DISTNAME = 'base'
-DESCRIPTION = 'A base repository for starting new projects'
+DISTNAME = 'trust-region-dca'
+DESCRIPTION = 'A DC optimization algorithm for python'
 MAINTAINER = '121onto'
 MAINTAINER_EMAIL = '121onto@gmail.com'
 URL = None
