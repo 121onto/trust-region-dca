@@ -1,11 +1,24 @@
 # coding: utf-8
 
-# Copyright (C) 2015, 121onto.  All rights reserved.
-# Code based on:
-#
-# Pham Dinh Tao and Le Thi Hoai An,
-# "A DC Optimization Algorithm for Solving the Trust-Region Subproblem,"
-# SIAM Journal on Optimization 8, no. 2 (1998): 476–505.
+"""A python implementation of a DC algorithm for the trust-region sub-problem.
+
+Copyright (C) 2015, 121onto.  All rights reserved.
+
+Notes
+-----
+Solves the following problem:
+
+.. math::
+
+    min_{x} x^TAx + b^Tx
+    s.t. \| x \| \le r
+
+References
+----------
+Pham Dinh Tao and Le Thi Hoai An,
+"A DC Optimization Algorithm for Solving the Trust-Region Subproblem,"
+SIAM Journal on Optimization 8, no. 2 (1998): 476–505.
+"""
 
 ###########################################################################
 ## imports
@@ -13,17 +26,16 @@
 import warnings
 import numpy as np
 import scipy.sparse.linalg as sparse_linalg
-import scipy.optimize as optimize
-
-from config import SEED
 
 ###########################################################################
 ## local solver
 
 class TrustRegionDCA(object):
+    """Solves the trust-region sub-problem using a DC algorithm.
+    """
     def __init__(self, A, b, r, n=None,
                  stopping_tol=10e-6, irlm_tol=0.1, verbose=False):
-        """"""
+
         self.A = A
         self.b = b
         self.r = r
@@ -210,9 +222,7 @@ class TrustRegionDCA(object):
 ###########################################################################
 ## tests
 
-prng = np.random.RandomState(SEED)
-
-def test_trdca_convex(n=100, r=10, verbose=False):
+def test_trdca_convex(prng, n=100, r=10, verbose=False):
     # Generate A
     A = np.diag([(i + 1) / n for i in range(n)])
     b = np.zeros(n)
@@ -241,7 +251,7 @@ def test_trdca_convex(n=100, r=10, verbose=False):
         ))
 
 
-def test_trdca_nonconvex(n=100, r=10, verbose=False):
+def test_trdca_nonconvex(prng, n=100, r=10, verbose=False):
     """TODO: work in progress"""
     # Generate A (skip for now)
     U = np.eye(n)
@@ -294,6 +304,14 @@ def test_trdca_nonconvex(n=100, r=10, verbose=False):
 ## main
 
 if __name__ == '__main__':
-    test_trdca_convex(n=100)
-    test_trdca_nonconvex(n=100)
+    import scipy.optimize as optimize
+    try:
+        from config import SEED
+    except:
+        SEED = 1234
+
+    prng = np.random.RandomState(SEED)
+    test_trdca_convex(prng, n=100)
+    test_trdca_nonconvex(prng, n=100)
+
     print('\n\n--> All tests ran without error.\n\n')
